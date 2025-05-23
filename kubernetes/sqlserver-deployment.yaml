@@ -1,0 +1,97 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: nostra-sqlserver
+  labels:
+    app: nostra-sqlserver
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: nostra-sqlserver
+  template:
+    metadata:
+      labels:
+        app: nostra-sqlserver
+    spec:
+      containers:
+      - name: sqlserver
+        image: mcr.microsoft.com/mssql/server:2022-latest
+        ports:
+        - containerPort: 1433
+        env:
+        - name: ACCEPT_EULA
+          value: "Y"
+        - name: MSSQL_PID
+          value: "Developer"
+        - name: SA_PASSWORD
+          valueFrom:
+            secretKeyRef:
+              name: nostra-db-secrets
+              key: sa-password
+        resources:
+          requests:
+            memory: "2Gi"
+            cpu: "1"
+          limits:
+            memory: "4Gi"
+            cpu: "2"
+        volumeMounts:
+        - name: sqlserver-data
+          mountPath: /var/opt/mssql
+        livenessProbe:
+          exec:
+            command:
+            - /bin/sh
+            - -c
+            - /opt/mssql-tools/bin/sqlcmd -S localhost -U sa -P $SA_PASSWORD -Q "SELECT 1" -b -o /dev/null
+          initialDelaySeconds: 30
+          periodSeconds: 10
+          timeoutSeconds: 5
+          failureThreshold: 3
+        readinessProbe:
+          exec:
+            command:
+            - /bin/sh
+            - -c
+            - /opt/mssql-tools/bin/sqlcmd -S localhost -U sa -P $SA_PASSWORD -Q "SELECT 1" -b -o /dev/null
+          initialDelaySeconds: 15
+          periodSeconds: 5
+          timeoutSeconds: 3
+          successThreshold: 1
+          failureThreshold: 3
+      volumes:
+      - name: sqlserver-data
+        persistentVolumeClaim:
+          claimName: nostra-sqlserver-pvc
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: nostra-sqlserver
+spec:
+  selector:
+    app: nostra-sqlserver
+  ports:
+  - port: 1433
+    targetPort: 1433
+  type: ClusterIP
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: nostra-sqlserver-pvc
+spec:
+  accessModes:
+    - ReadWriteOnce
+  resources:
+    requests:
+      storage: 10Gi
+---
+apiVersion: v1
+kind: Secret
+metadata:
+  name: nostra-db-secrets
+type: Opaque
+data:
+  sa-password: Tm9zdHJhU3RyMG5nUEBzc3cwcmQ=  # NostraStr0ngP@ssw0rd base64 encoded
