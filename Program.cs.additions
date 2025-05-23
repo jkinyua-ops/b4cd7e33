@@ -1,0 +1,96 @@
+// Add these imports at the top of your Program.cs file
+using Microsoft.EntityFrameworkCore;
+using Microsoft.Extensions.Diagnostics.HealthChecks;
+using System;
+using System.Threading;
+
+// Add these configurations to your Program.cs builder section
+
+// Configure database context
+builder.Services.AddDbContext<ApplicationDbContext>(options =>
+    options.UseSqlServer(
+        builder.Configuration.GetConnectionString("DefaultSqlConnection"),
+        sqlServerOptionsAction: sqlOptions =>
+        {
+            sqlOptions.EnableRetryOnFailure(
+                maxRetryCount: 5,
+                maxRetryDelay: TimeSpan.FromSeconds(30),
+                errorNumbersToAdd: null);
+        }
+    )
+);
+
+// Add health checks
+builder.Services.AddHealthChecks()
+    .AddSqlServer(
+        connectionString: builder.Configuration.GetConnectionString("DefaultSqlConnection"),
+        healthQuery: "SELECT 1;",
+        name: "main-database",
+        failureStatus: HealthStatus.Degraded,
+        tags: new[] { "db", "sql", "sqlserver" })
+    .AddSqlServer(
+        connectionString: builder.Configuration.GetConnectionString("TaskQueueConnection"),
+        healthQuery: "SELECT 1;",
+        name: "task-database",
+        failureStatus: HealthStatus.Degraded,
+        tags: new[] { "db", "sql", "sqlserver", "tasks" });
+
+// Configure CORS
+builder.Services.AddCors(options =>
+{
+    options.AddPolicy("CorsPolicy", policy =>
+    {
+        policy.WithOrigins(builder.Configuration.GetSection("Cors:AllowedOrigins").Get<string[]>() ?? Array.Empty<string>())
+            .AllowAnyMethod()
+            .AllowAnyHeader()
+            .AllowCredentials();
+    });
+});
+
+// Add these to your app configuration section after builder.Build()
+
+// Configure the HTTP request pipeline.
+app.UseHttpsRedirection();
+
+// Use CORS
+app.UseCors("CorsPolicy");
+
+// Map health checks
+app.MapHealthChecks("/health", new Microsoft.AspNetCore.Diagnostics.HealthChecks.HealthCheckOptions
+{
+    ResponseWriter = async (context, report) =>
+    {
+        context.Response.ContentType = "application/json";
+        var result = System.Text.Json.JsonSerializer.Serialize(
+            new
+            {
+                status = report.Status.ToString(),
+                checks = report.Entries.Select(e => new
+                {
+                    name = e.Key,
+                    status = e.Value.Status.ToString(),
+                    description = e.Value.Description,
+                    duration = e.Value.Duration.ToString()
+                })
+            });
+        await context.Response.WriteAsync(result);
+    }
+});
+
+// Add database migration code
+if (app.Environment.IsDevelopment())
+{
+    using (var scope = app.Services.CreateScope())
+    {
+        var dbContext = scope.ServiceProvider.GetRequiredService<ApplicationDbContext>();
+        try
+        {
+            dbContext.Database.Migrate();
+            Console.WriteLine("Database migration completed successfully.");
+        }
+        catch (Exception ex)
+        {
+            Console.WriteLine($"An error occurred while migrating the database: {ex.Message}");
+        }
+    }
+}
