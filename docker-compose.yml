@@ -1,0 +1,96 @@
+version: '3.8'
+
+services:
+  sqlserver:
+    image: mcr.microsoft.com/mssql/server:2019-latest
+    environment:
+      - ACCEPT_EULA=Y
+      - SA_PASSWORD=YourStrong@Passw0rd
+    ports:
+      - "1433:1433"
+    volumes:
+      - sqlserver_data:/var/opt/mssql
+    networks:
+      - nostra-network
+    healthcheck:
+      test: /opt/mssql-tools/bin/sqlcmd -S localhost -U sa -P "YourStrong@Passw0rd" -Q "SELECT 1" || exit 1
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
+    deploy:
+      resources:
+        limits:
+          memory: 2G
+
+  db-init:
+    build:
+      context: .
+      dockerfile: Dockerfile.db-init
+    depends_on:
+      sqlserver:
+        condition: service_healthy
+    environment:
+      - ConnectionStrings__DefaultSqlConnection=Server=sqlserver;Database=Nostra_Dataload;User Id=sa;Password=YourStrong@Passw0rd;TrustServerCertificate=True;
+      - ConnectionStrings__TaskQueueConnection=Server=sqlserver;Database=Nostra_Dataload_Tasks;User Id=sa;Password=YourStrong@Passw0rd;TrustServerCertificate=True;
+      - ConnectionStrings__OrleansConnection=Server=sqlserver;Database=Nostra_Dataload_Orleans;User Id=sa;Password=YourStrong@Passw0rd;TrustServerCertificate=True;
+    networks:
+      - nostra-network
+
+  host:
+    build:
+      context: .
+      dockerfile: Dockerfile.host
+    ports:
+      - "5000:80"
+      - "5001:443"
+      - "11111:11111"
+      - "30000:30000"
+    depends_on:
+      db-init:
+        condition: service_completed_successfully
+    environment:
+      - ASPNETCORE_ENVIRONMENT=Development
+      - ConnectionStrings__DefaultSqlConnection=Server=sqlserver;Database=Nostra_Dataload;User Id=sa;Password=YourStrong@Passw0rd;TrustServerCertificate=True;
+      - ConnectionStrings__TaskQueueConnection=Server=sqlserver;Database=Nostra_Dataload_Tasks;User Id=sa;Password=YourStrong@Passw0rd;TrustServerCertificate=True;
+      - ORLEANS_CLUSTERING_PROVIDER=AdoNet
+      - ORLEANS_CLUSTERING_INVARIANT=Microsoft.Data.SqlClient
+      - ORLEANS_CLUSTERING_CONNECTIONSTRING=Server=sqlserver;Database=Nostra_Dataload_Orleans;User Id=sa;Password=YourStrong@Passw0rd;TrustServerCertificate=True;
+    networks:
+      - nostra-network
+    healthcheck:
+      test: curl -f http://localhost:80/health || exit 1
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 40s
+
+  ui:
+    build:
+      context: .
+      dockerfile: Dockerfile.ui
+    ports:
+      - "5002:80"
+      - "5003:443"
+    depends_on:
+      host:
+        condition: service_healthy
+    environment:
+      - ASPNETCORE_ENVIRONMENT=Development
+      - API_BASE_URL=http://host
+      - ConnectionStrings__DefaultSqlConnection=Server=sqlserver;Database=Nostra_Dataload;User Id=sa;Password=YourStrong@Passw0rd;TrustServerCertificate=True;
+    networks:
+      - nostra-network
+    healthcheck:
+      test: curl -f http://localhost:80/health || exit 1
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 20s
+
+networks:
+  nostra-network:
+    driver: bridge
+
+volumes:
+  sqlserver_data:
