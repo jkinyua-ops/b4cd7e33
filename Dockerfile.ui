@@ -1,0 +1,51 @@
+FROM mcr.microsoft.com/dotnet/sdk:7.0 AS build
+WORKDIR /src
+
+# Copy solution and csproj files first for layer caching
+COPY ["Nostra.DataLoad.sln", "./"]
+COPY ["MLModel1_WebApi1/MLModel1_WebApi1.csproj", "MLModel1_WebApi1/"]
+COPY ["MLNetTest/MLNetTest.csproj", "MLNetTest/"]
+COPY ["Nostra.DataLoad/Nostra.DataLoad.csproj", "Nostra.DataLoad/"]
+COPY ["Nostra.DataLoad.APIClient/Nostra.DataLoad.APIClient.csproj", "Nostra.DataLoad.APIClient/"]
+COPY ["Nostra.DataLoad.AutotaskAPIClient/Nostra.DataLoad.AutotaskAPIClient.csproj", "Nostra.DataLoad.AutotaskAPIClient/"]
+COPY ["Nostra.DataLoad.Cin7APIClient/Nostra.DataLoad.Cin7APIClient.csproj", "Nostra.DataLoad.Cin7APIClient/"]
+COPY ["Nostra.DataLoad.Core/Nostra.DataLoad.Core.csproj", "Nostra.DataLoad.Core/"]
+COPY ["Nostra.DataLoad.Domain/Nostra.DataLoad.Domain.csproj", "Nostra.DataLoad.Domain/"]
+COPY ["Nostra.DataLoad.Host/Nostra.DataLoad.Host.csproj", "Nostra.DataLoad.Host/"]
+COPY ["Nostra.DataLoad.UI/Nostra.DataLoad.UI.csproj", "Nostra.DataLoad.UI/"]
+
+# Restore packages
+RUN dotnet restore "Nostra.DataLoad.UI/Nostra.DataLoad.UI.csproj"
+
+# Copy the rest of the source code
+COPY . .
+
+# Build the UI project
+RUN dotnet build "Nostra.DataLoad.UI/Nostra.DataLoad.UI.csproj" -c Release -o /app/build
+
+# Publish the UI project
+FROM build AS publish
+RUN dotnet publish "Nostra.DataLoad.UI/Nostra.DataLoad.UI.csproj" -c Release -o /app/publish
+
+# Runtime image
+FROM mcr.microsoft.com/dotnet/aspnet:7.0 AS runtime
+WORKDIR /app
+COPY --from=publish /app/publish .
+EXPOSE 80
+EXPOSE 443
+
+# Add health check endpoint
+HEALTHCHECK --interval=30s --timeout=30s --start-period=30s --retries=3 \
+    CMD curl -f http://localhost:80/health || exit 1
+
+# Environment variables for API connection
+ENV API_BASE_URL="http://host"
+ENV ASPNETCORE_ENVIRONMENT=Production
+ENV ConnectionStrings__DefaultSqlConnection="Server=sqlserver;Database=Nostra_Dataload;User Id=sa;Password=YourStrong@Passw0rd;TrustServerCertificate=True;ConnectRetryCount=5;ConnectRetryInterval=10;Connection Timeout=30;"
+
+# Add wait-for-it script to ensure API is ready before starting the UI
+ADD https://raw.githubusercontent.com/vishnubob/wait-for-it/master/wait-for-it.sh /wait-for-it.sh
+RUN chmod +x /wait-for-it.sh
+
+# Entry point with API connection retry
+ENTRYPOINT ["/bin/bash", "-c", "/wait-for-it.sh host:80 -t 120 && dotnet Nostra.DataLoad.UI.dll"]
